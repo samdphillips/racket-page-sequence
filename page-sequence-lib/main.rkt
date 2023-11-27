@@ -1,36 +1,46 @@
 #lang racket/base
 
-(require (for-syntax racket/base)
-         racket/contract
+(require racket/contract
          racket/sequence
-         syntax/parse/define)
+         racket/stream)
 
-(provide (contract-out [make-paged-sequence
-                        (-> (-> any)
-                            (-> any/c sequence?)
-                            (-> any/c any)
-                            (-> any/c boolean?)
-                            sequence?)]))
+(provide (contract-out
+          [make-paged-sequence
+           (-> (-> any)
+               (-> any/c sequence?)
+               (-> any/c any)
+               (-> any/c boolean?)
+               sequence?)]))
 
-(struct sequence-lazy-wrapper (thunk)
-  #:property prop:sequence
-  (λ (this) ((sequence-lazy-wrapper-thunk this))))
+(define (pos-page ps)   (list-ref ps 0))
+(define (pos-elems ps)  (list-ref ps 1))
 
-(define-syntax-parse-rule (sequence-lazy e)
-  #:declare e (expr/c #'sequence?)
-  (sequence-lazy-wrapper (λ () e.c)))
-
-(define (make-paged-sequence init-proc
-                             get-elements-proc
-                             next-proc
-                             at-end-pred)
-  (define (do-page at-end? get-next)
-    (cond
-      [at-end? empty-sequence]
-      [else
-       (define result (get-next))
-       (sequence-append
-        (get-elements-proc result)
-        (sequence-lazy (do-page (at-end-pred result)
-                                (λ () (next-proc result)))))]))
-  (do-page #f init-proc))
+(define (make-paged-sequence init-page-proc
+                             page->elems
+                             next-page
+                             at-end?)
+  (make-do-sequence
+   (λ ()
+     (define init-page (init-page-proc))
+     (define elems (sequence->stream (page->elems init-page)))
+     (define init-pos (list init-page elems))
+     (define (pos->element ps)
+       (stream-first (pos-elems ps)))
+     (define (next-pos ps)
+       (cond
+         [(and (stream-empty? (stream-rest (pos-elems ps)))
+               (not (at-end? (pos-page ps))))
+          (define page (next-page (pos-page ps)))
+          (define elems (sequence->stream (page->elems page)))
+          (list page elems)]
+         [else
+          (list (pos-page ps)
+                (stream-rest (pos-elems ps)))]))
+     (define (continue-with-pos? ps)
+       (not (and (stream-empty? (pos-elems ps))
+                 (at-end? (pos-page ps)))))
+     (initiate-sequence #:init-pos     init-pos
+                        #:pos->element pos->element
+                        #:next-pos     next-pos
+                        #:continue-with-pos?
+                        continue-with-pos?))))
